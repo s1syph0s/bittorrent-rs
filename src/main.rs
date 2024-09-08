@@ -44,7 +44,8 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                 v.push(val);
                 rest = new_rest;
             }
-            return (v.into(), rest);
+            return (v.into(), &rest[1..]);
+        }
         }
         Some('0'..='9') => {
             if let Some((len, rest)) = encoded_value.split_once(':') {
