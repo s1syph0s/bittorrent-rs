@@ -29,6 +29,7 @@
           packages = [ 
             rust-pack
             openssl
+            pkg-config
           ];
         });
       }
