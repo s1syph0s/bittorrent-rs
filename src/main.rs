@@ -1,5 +1,5 @@
 use core::panic;
-use serde_json;
+use serde_json::{self, Map};
 use std::env;
 
 // Available if you need it!
@@ -46,6 +46,20 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
             }
             return (v.into(), &rest[1..]);
         }
+        Some('d') => {
+            let mut d = Map::new();
+            let mut rest = encoded_value.split_at(1).1;
+            while !rest.starts_with('e') {
+                let (key, new_rest) = decode_bencoded_value(rest);
+                let k = match key {
+                    serde_json::Value::String(k) => k,
+                    _ => panic!("dict key must be string!"),
+                };
+                let (v, new_rest) = decode_bencoded_value(new_rest);
+                d.insert(k, v);
+                rest = new_rest;
+            }
+            return (d.into(), &rest[1..]);
         }
         Some('0'..='9') => {
             if let Some((len, rest)) = encoded_value.split_once(':') {
