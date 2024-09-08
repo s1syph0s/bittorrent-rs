@@ -36,6 +36,16 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                 return (n.into(), rest);
             }
         }
+        Some('l') => {
+            let mut v = Vec::new();
+            let mut rest = encoded_value.split_at(1).1;
+            while !rest.starts_with('e') {
+                let (val, new_rest) = decode_bencoded_value(rest);
+                v.push(val);
+                rest = new_rest;
+            }
+            return (v.into(), rest);
+        }
         Some('0'..='9') => {
             if let Some((len, rest)) = encoded_value.split_once(':') {
                 if let Ok(len) = len.parse::<usize>() {
