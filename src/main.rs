@@ -1,92 +1,120 @@
+#![allow(dead_code)]
+use anyhow::Context;
+use clap::{Parser, Subcommand};
 use core::panic;
+use serde::Deserialize;
 use serde_json::{self, Map};
-use std::env;
+use std::{env, path::PathBuf};
 
-// Available if you need it!
-// use serde_bencode
+use hashes::Hashes;
 
-// fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
-//     // If encoded_value starts with a digit, it's a number
-//     if encoded_value.chars().next().unwrap().is_ascii_digit() {
-//         // Example: "5:hello" -> "hello"
-//         let colon_index = encoded_value.find(':').unwrap();
-//         let number_string = &encoded_value[..colon_index];
-//         let number = number_string.parse::<usize>().unwrap();
-//         let string = &encoded_value[colon_index + 1..colon_index + 1 + number];
-//         serde_json::Value::String(string.to_string())
-//     } else {
-//         panic!("Unhandled encoded value: {}", encoded_value)
-//     }
-// }
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
 
-#[allow(dead_code)]
-fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
-    match encoded_value.chars().next() {
-        Some('i') => {
-            if let Some((n, rest)) =
-                encoded_value
-                    .split_at(1)
-                    .1
-                    .split_once('e')
-                    .and_then(|(nums, rest)| {
-                        let n = nums.parse::<i64>().ok()?;
-                        Some((n, rest))
-                    })
-            {
-                return (n.into(), rest);
-            }
-        }
-        Some('l') => {
-            let mut v = Vec::new();
-            let mut rest = encoded_value.split_at(1).1;
-            while !rest.starts_with('e') {
-                let (val, new_rest) = decode_bencoded_value(rest);
-                v.push(val);
-                rest = new_rest;
-            }
-            return (v.into(), &rest[1..]);
-        }
-        Some('d') => {
-            let mut d = Map::new();
-            let mut rest = encoded_value.split_at(1).1;
-            while !rest.starts_with('e') {
-                let (key, new_rest) = decode_bencoded_value(rest);
-                let k = match key {
-                    serde_json::Value::String(k) => k,
-                    _ => panic!("dict key must be string!"),
-                };
-                let (v, new_rest) = decode_bencoded_value(new_rest);
-                d.insert(k, v);
-                rest = new_rest;
-            }
-            return (d.into(), &rest[1..]);
-        }
-        Some('0'..='9') => {
-            if let Some((len, rest)) = encoded_value.split_once(':') {
-                if let Ok(len) = len.parse::<usize>() {
-                    return (rest[..len].to_string().into(), &rest[len..]);
-                }
-            }
-        }
-        _ => {}
-    }
-    panic!("Unhandled encoded value: {}", encoded_value);
+#[derive(Subcommand, Debug)]
+enum Command {
+    Decode { value: String },
+
+    Info { torrent: PathBuf },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Torrent {
+    announce: String,
+    info: Info,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Info {
+    name: String,
+
+    #[serde(rename = "piece length")]
+    plength: u64,
+    pieces: Hashes,
+
+    #[serde(flatten)]
+    keys: Keys,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Keys {
+    SingleFile { length: u64 },
+
+    MultiFile { files: Vec<File> },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct File {
+    length: u64,
+    path: Vec<String>,
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let command = &args[1];
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
 
-    if command == "decode" {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        // eprintln!("Logs from your program will appear here!");
+    match args.command {
+        Command::Decode { value } => {
+            let v: serde_bencode::value::Value = serde_bencode::from_str(&value)?;
+            println!("{:?}", v);
+        }
+        Command::Info { torrent } => {
+            let torrent_f = std::fs::read(torrent).context("read torrent file")?;
+            let t: Torrent = serde_bencode::from_bytes(&torrent_f).context("parse torrent file")?;
 
-        // Uncomment this block to pass the first stage
-        let encoded_value = &args[2];
-        let decoded_value = decode_bencoded_value(encoded_value);
-        println!("{}", decoded_value.0);
-    } else {
-        println!("unknown command: {}", args[1])
+            println!("Tracker URL: {}", t.announce);
+            if let Keys::SingleFile { length } = t.info.keys {
+                println!("Length: {length}");
+            } else {
+                todo!();
+            }
+        }
+    }
+    Ok(())
+}
+
+mod hashes {
+    use serde::de::{self, Deserialize, Deserializer, Visitor};
+    use std::fmt;
+
+    #[derive(Debug, Clone)]
+    pub struct Hashes(pub Vec<[u8; 20]>);
+
+    struct HashesVisitor;
+
+    impl<'de> Visitor<'de> for HashesVisitor {
+        type Value = Hashes;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a byte string whose length is a multiple of 20")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if v.len() % 20 != 0 {
+                return Err(E::custom(format!("length is {}", v.len())));
+            }
+            Ok(Hashes(
+                v.chunks_exact(20)
+                    .map(|slice_20| slice_20.try_into().expect("guaranteed to be length 20"))
+                    .collect(),
+            ))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Hashes {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_bytes(HashesVisitor)
+        }
     }
 }
