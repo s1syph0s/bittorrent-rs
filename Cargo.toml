@@ -6,9 +6,9 @@
 #
 # DON'T EDIT THIS!
 [package]
-name = "bittorrent-starter-rust"
+name = "bittorrent-rs"
 version = "0.1.0"
-authors = ["Codecrafters <hello@codecrafters.io>"]
+authors = ["Pasha Fistanto"]
 edition = "2021"
 
 # DON'T EDIT THIS!
@@ -34,3 +34,4 @@ sha1 = "0.10.1"                                                    # hashing
 tempfile = "3"                                                     # creating temporary directories
 thiserror = "1.0.38"                                               # error handling
 tokio = { version = "1.23.0", features = ["full"] }                # async http requests
+nanoid = "0.4.0"                                                   # id generator

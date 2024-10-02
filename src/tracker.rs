@@ -75,10 +75,10 @@ pub mod peers {
             }
             Ok(Peers(
                 v.chunks_exact(6)
-                    .map(|s6| {
+                    .map(|slice_6| {
                         SocketAddrV4::new(
-                            Ipv4Addr::new(s6[0], s6[1], s6[2], s6[3]),
-                            u16::from_be_bytes([s6[4], s6[5]]),
+                            Ipv4Addr::new(slice_6[0], slice_6[1], slice_6[2], slice_6[3]),
+                            u16::from_be_bytes([slice_6[4], slice_6[5]]),
                         )
                     })
                     .collect(),
