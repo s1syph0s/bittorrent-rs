@@ -11,7 +11,7 @@ use tokio::{
 };
 
 use bittorrent_rs::{
-    handshake::Handshake,
+    peer::Handshake,
     torrent::{self, Torrent},
     tracker::{TrackerRequest, TrackerResponse},
 };
