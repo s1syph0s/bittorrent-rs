@@ -11,6 +11,7 @@ use std::{env, net::SocketAddrV4, path::PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::{mpsc::Receiver, mpsc::Sender},
 };
 
 use bittorrent_rs::{
@@ -212,15 +213,53 @@ async fn main() -> anyhow::Result<()> {
                 .choose(&mut rng)
                 .expect("peers should be returned");
 
-            let peer = TcpStream::connect(peer).await.context("connect to peer")?;
+            let mut peer = TcpStream::connect(peer).await.context("connect to peer")?;
+            let peer_id = request.peer_id.into_bytes().try_into().unwrap();
 
-            let all_blocks = download_piece(
-                peer,
-                t,
-                piece_i,
-                &request.peer_id.into_bytes().try_into().unwrap(),
-            )
-            .await?;
+            // Handshake
+            let mut handshake = Handshake::new(t.info_hash(), peer_id);
+            let handshake_b = handshake.as_mut_bytes();
+            peer.write_all(handshake_b).await?;
+            peer.read_exact(handshake_b).await?;
+            assert_eq!(&handshake.msg, b"BitTorrent protocol");
+
+            let mut peer = tokio_util::codec::Framed::new(peer, MessageCodec);
+
+            // Wait for bitfield msg
+            let bitfield = peer
+                .next()
+                .await
+                .expect("peer always sends a bitfields")
+                .context("peer msg was invalid")?;
+            assert_eq!(bitfield.tag, MessageTag::Bitfield);
+
+            // Send interested msg
+            peer.send(Message {
+                tag: MessageTag::Interested,
+                payload: Vec::new(),
+            })
+            .await
+            .context("send interested msg")?;
+
+            // Wait for unchoke msg
+            let unchoke = peer
+                .next()
+                .await
+                .expect("peer always sends an unchoke")
+                .context("peer msg was invalid")?;
+            assert_eq!(unchoke.tag, MessageTag::Unchoke);
+
+            let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(200);
+            let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(200);
+            let h = tokio::spawn(download_piece((req_tx, resp_rx), t, piece_i));
+
+            while let Some(msg) = req_rx.recv().await {
+                peer.send(msg).await?;
+                let resp = peer.next().await.unwrap()?;
+                resp_tx.send(resp).await?;
+            }
+
+            let all_blocks = h.await??;
 
             tokio::fs::write(&output, all_blocks)
                 .await
@@ -276,60 +315,29 @@ async fn main() -> anyhow::Result<()> {
                 .choose(&mut rng)
                 .expect("peers should be returned");
 
-            let peer = TcpStream::connect(peer).await.context("connect to peer")?;
+            let mut peer = TcpStream::connect(peer).await.context("connect to peer")?;
+            let peer_id = request.peer_id.into_bytes().try_into().unwrap();
+
+            // Handshake
+            let mut handshake = Handshake::new(t.info_hash(), peer_id);
+            let handshake_b = handshake.as_mut_bytes();
+            peer.write_all(handshake_b).await?;
+            peer.read_exact(handshake_b).await?;
+
+            assert_eq!(&handshake.msg, b"BitTorrent protocol");
         }
     }
     Ok(())
 }
 
-async fn download_piece(
-    mut peer: TcpStream,
-    t: Torrent,
-    piece_i: usize,
-    peer_id: &[u8; 20],
-) -> anyhow::Result<Vec<u8>> {
+type Channel = (Sender<Message>, Receiver<Message>);
+async fn download_piece(c: Channel, t: Torrent, piece_i: usize) -> anyhow::Result<Vec<u8>> {
+    let (tx, mut rx) = c;
     let length = if let torrent::Keys::SingleFile { length } = t.info.keys {
         length
     } else {
         panic!("key should be either singlefile or multifile!");
     };
-
-    // Handshake
-    let mut handshake = Handshake::new(t.info_hash(), *peer_id);
-    let handshake_b = handshake.as_mut_bytes();
-    peer.write_all(handshake_b).await?;
-    peer.read_exact(handshake_b).await?;
-
-    assert_eq!(&handshake.msg, b"BitTorrent protocol");
-
-    let mut peer = tokio_util::codec::Framed::new(peer, MessageCodec);
-
-    // Wait for bitfield msg
-    let bitfield = peer
-        .next()
-        .await
-        .expect("peer always sends a bitfields")
-        .context("peer msg was invalid")?;
-
-    assert_eq!(bitfield.tag, MessageTag::Bitfield);
-
-    // Send interested msg
-    peer.send(Message {
-        tag: MessageTag::Interested,
-        payload: Vec::new(),
-    })
-    .await
-    .context("send interested msg")?;
-
-    // Wait for unchoke msg
-    let unchoke = peer
-        .next()
-        .await
-        .expect("peer always sends an unchoke")
-        .context("peer msg was invalid")?;
-
-    assert_eq!(unchoke.tag, MessageTag::Unchoke);
-
     let piece_hash = &t.info.pieces.0[piece_i];
 
     // last piece can be smaller than the plength
@@ -365,7 +373,7 @@ async fn download_piece(
 
         let request_bytes = Vec::from(request.as_bytes_mut());
 
-        peer.send(Message {
+        tx.send(Message {
             tag: MessageTag::Request,
 
             payload: request_bytes,
@@ -373,11 +381,7 @@ async fn download_piece(
         .await
         .with_context(|| format!("send request for block {block}"))?;
 
-        let piece = peer
-            .next()
-            .await
-            .expect("peer always sends a piece")
-            .context("peer message was invalid")?;
+        let piece = rx.recv().await.expect("peer always sends a piece");
 
         assert_eq!(piece.tag, MessageTag::Piece);
 
@@ -394,9 +398,7 @@ async fn download_piece(
 
     let mut hasher = Sha1::new();
     hasher.update(&all_blocks);
-
     let hash: [u8; 20] = hasher.finalize().into();
-
     assert_eq!(&hash, piece_hash);
 
     Ok(all_blocks)
