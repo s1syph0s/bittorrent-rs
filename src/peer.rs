@@ -23,7 +23,7 @@ impl Handshake {
         }
     }
 
-    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         let bytes = self as *mut Handshake as *mut [u8; std::mem::size_of::<Handshake>()];
         let bytes: &mut [u8; std::mem::size_of::<Handshake>()] = unsafe { &mut *bytes };
         bytes
@@ -86,8 +86,19 @@ impl Request {
     }
 }
 
-#[repr(C)]
+// impl From<Message> for Request {
+//     fn from(value: Message) -> Self {
+//         assert_eq!(value.tag, MessageTag::Request);
+//         assert_eq!(value.payload.len(), 12);
+//         Request {
+//             index: value.payload[..4].try_into().unwrap(),
+//             begin: value.payload[4..8].try_into().unwrap(),
+//             length: value.payload[8..12].try_into().unwrap(),
+//         }
+//     }
+// }
 
+#[repr(C)]
 pub struct Piece<T: ?Sized = [u8]> {
     index: [u8; 4],
     begin: [u8; 4],
